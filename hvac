@@ -1,0 +1,119 @@
+import numpy as np
+import socket
+import time as t
+import os
+
+# Function for socket communication
+def getsckt_data(port, host):
+    data = []
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind((host, port))
+    except socket.error as e:
+        s.connect((host, port))
+        temp = s.recv(1024).decode()
+        data.append(temp)
+    values = data[0].split(",")
+    return values[0], values[1]  # Adjust based on actual data format
+
+# HSA Initialization
+HMS = 5                     # Harmony Memory Size #no of particle 
+HMCR = 0.9                  # Harmony Memory Consideration Rate
+PAR = 0.3                   # Pitch Adjustment Rate
+max_iterations = 3          # Number of HSA iterations #no of run or generation
+P_Sim_itrr = 60             # Plant simulation for each harmony
+h = 0.25                    # Step size
+ref = [23] * P_Sim_itrr     # Reference temperature
+T_O = 24.8                  # Outside temperature
+
+Kp_min, Kp_max = 1.5, 3
+Ki_min, Ki_max = 1.5, 3
+
+# Harmony Memory Initialization
+HM = np.random.uniform([Kp_min, Ki_min], [Kp_max, Ki_max], (HMS, 2))  # Initial harmonies
+IAE = np.full(HMS, float('inf'))  # Objective function values for each harmony
+
+# File setup
+file_toSave = 'online_PI_tuning_HSO.csv'
+Mode = 'w'
+with open(file_toSave, Mode) as f:
+    f.write('slno, Wall_1,Humid1, Wall3,Humid3, Wall_4,Humid4, Outside, T_m, error, U_PID, Kp, Ki, IAE, BestIAE, BestKp, BestKi\n')
+
+    # HSA main loop
+    for iteration in range(max_iterations):
+        for i in range(HMS):
+            Kp, Ki = HM[i]
+            error = []
+            T_m = []
+            u_pid = []
+            U_PID = []
+
+            for k in range(P_Sim_itrr):
+                print(f"Sim_ittr: {k}, Harmony: {i}, Iteration: {iteration}")
+                T_W_1, H1 = getsckt_data(5540, '10.0.0.100')
+                T_W_3, H3 = getsckt_data(5550, '10.0.0.104')
+                T_W_4, H4 = getsckt_data(5500, '10.0.0.103')
+                print("sleep invoked")
+                t.sleep(1)
+                print("sleep timeout")
+
+                if k == 0:
+                    T_m.append(25)
+                    error.append(0)
+                    u_pid.append(0)
+                    U_PID.append(0)
+                    os.system('sudo irsend SEND_ONCE AC_FANSPEED 24_H')  # Starting temperature
+                else:
+                    T_4 = float(T_W_4)
+                    T_m.append(T_4)
+                    error.append(T_m[k] - ref[k])
+                    # PI controller
+                    PID1 = Kp + (Ki * h / 2)
+                    PID2 = -Kp + (Ki * h / 2)
+                    u_pid.append(PID1 * error[k] + PID2 * error[k - 1])
+                    U_PID.append(min(1, max(0, u_pid[k])))
+                    r = (k + 1) % 8
+                    if r == 0:
+                        if ref[k] == 24:
+                            if U_PID[k] >= 0.66:
+                                os.system('sudo irsend SEND_ONCE AC_FANSPEED 21_H')
+                            elif 0.33 <= U_PID[k] < 0.66:
+                                os.system('sudo irsend SEND_ONCE AC_FANSPEED 23_H')
+                            elif 0.2 <= U_PID[k] < 0.33:
+                                os.system('sudo irsend SEND_ONCE AC_FANSPEED 24_H')
+                            elif 0.1 <= U_PID[k] < 0.2:
+                                os.system('sudo irsend SEND_ONCE AC_FANSPEED 25_H')
+                            elif U_PID[k] < 0.1:
+                                os.system('sudo irsend SEND_ONCE AC_FANSPEED 25_M')
+
+                strin = f"{i},{T_W_1},{H1},{T_W_3},{H3},{T_W_4},{H4},{T_O},{T_m[k]},{error[k]},{U_PID[k]},{Kp},{Ki},{IAE[i]}\n"
+                f.write(strin)
+
+            # Calculate IAE for the current harmony
+            IAE[i] = np.sum(np.abs(error)) * h
+
+        # Generate a new harmony
+        new_harmony = []
+        for d in range(2):  # Iterate over dimensions (Kp, Ki)
+            if np.random.rand() < HMCR:  # Harmony Memory Consideration
+                selected_harmony = HM[np.random.randint(HMS), d]
+                if np.random.rand() < PAR:  # Pitch Adjustment
+                    adjustment = np.random.uniform(-0.01, 0.01)
+                    selected_harmony = np.clip(selected_harmony + adjustment, [Kp_min, Ki_min][d], [Kp_max, Ki_max][d])
+                new_harmony.append(selected_harmony)
+            else:  # Random selection
+                new_harmony.append(np.random.uniform([Kp_min, Ki_min][d], [Kp_max, Ki_max][d]))
+
+        new_harmony = np.array(new_harmony)
+        new_IAE = np.min(IAE)  # Evaluate new harmony
+
+        # Update Harmony Memory
+        worst_idx = np.argmax(IAE)
+        if new_IAE < IAE[worst_idx]:
+            HM[worst_idx] = new_harmony
+            IAE[worst_idx] = new_IAE
+
+    # Save the best solution
+    best_idx = np.argmin(IAE)
+    best_Kp, best_Ki = HM[best_idx]
+    f.write(f"Best Solution: Kp = {best_Kp}, Ki = {best_Ki}, IAE = {IAE[best_idx]}\n")
