@@ -9,14 +9,14 @@ def getsckt_data(port, host):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         s.bind((host, port))
-    except socket.error as e:
+    except socket. error as e:
         s.connect((host, port))
         temp = s.recv(1024).decode()
         data.append(temp)
     values = data[0].split(",")
     return values[0], values[1]  # Adjust based on actual data format
 
-# HSA Initialization
+# HSO Initialization
 HMS = 5                     # Harmony Memory Size #no of particle 
 HMCR = 0.9                  # Harmony Memory Consideration Rate
 PAR = 0.3                   # Pitch Adjustment Rate
